@@ -1,0 +1,146 @@
+---
+title: "NaiveBayesFakeNewsRens"
+author: "Rens van Dijck"
+---
+
+## Setup
+
+```{r}
+library(e1071)
+library(tidyverse)
+library(caret)
+library(wordcloud)
+library(tm)
+```
+
+## Business understanding
+
+In this quatro document the NB model will be created, in the word file included in the github repository named "introduction to data mining assignment.docx" the review of the KNN model provided by mail is reviewed.
+
+In the era of online information, distinguishing real news from fake news is critical. Misinformation poses risks to people, governments and business alike. In this data set there are news articles with a label determining if they are real or not. With this data we will train a naive bayes model that will try to predict if an article is real or fake. At the end we will determine the accuracy and findings of this model.
+
+## Data understanding
+
+We load in the csv file and put it in a data frame.
+
+```{r}
+url <- "C:/Users/Rens/Documents/R_projects/DataMinor/NaiveBayesFakeNewsRens/NB-fakenews.csv"
+newsDF <- read.csv(url)
+```
+
+Inspecting the data and understanding the columns with head() and the str().
+
+```{r}
+head(newsDF)
+str(newsDF)
+```
+
+We relevel the label column and assign it Real or Fake, 0 being fake news, 1 being real news.
+
+```{r}
+newsDF$label <- newsDF$label %>% factor(levels = c(0, 1), labels = c("Real", "Fake")) %>% relevel("Real")
+class(newsDF$label)
+```
+
+To see the difference of use in words between the fake news and the real news visually, we use a wordcloud.
+
+```{r}
+fakeDF <- newsDF %>% filter(label == "1")
+realDF <- newsDF %>% filter(label == "0")
+
+wordcloud(fakeDF$text, max.words = 20, scale = c(4, 0.8), colors= c("indianred1","indianred2","indianred3","indianred"))
+wordcloud(realDF$text, max.words = 20, scale = c(4, 0.8), colors= c("lightsteelblue1","lightsteelblue2","lightsteelblue3","lightsteelblue"))
+```
+
+## Data Preparation
+
+First let's make a raw corpus.
+
+```{r}
+rawCorpusNews <- Corpus(VectorSource(newsDF$text))
+inspect(rawCorpusNews[1:3])
+```
+
+Using the tm package we use tm_map to clean any unnecessary characters out of the data, which makes the model perform better also the text is converted to another encoding because I got an error which was probably because there were non-ASCII characters in the data.
+
+```{r}
+cleanCorpusNews <- rawCorpusNews %>% tm_map(content_transformer(iconv), from = "UTF-8", to = "ASCII//TRANSLIT") %>% tm_map(tolower) %>% tm_map(removeNumbers)%>% tm_map(removeWords, stopwords()) %>% tm_map(removePunctuation) %>% tm_map(stripWhitespace)
+```
+
+In this tibble we see the difference between the raw corpus and the clean one.
+
+```{r}
+tibble(Raw = rawCorpusNews$content[1:3], Clean = cleanCorpusNews$content[1:3])
+```
+
+Now we can transform the text into a DocumentTermMatrix where each word is a column and each row will be an article.
+
+```{r}
+cleanDTMnews <- cleanCorpusNews %>% DocumentTermMatrix
+inspect(cleanDTMnews)
+```
+
+Here we split the data into train and test sets. WIth createDataPartition() from the caret package we can split it into 75% and 25%. Then we split the raw data, the corpus and the matrix.
+
+```{r}
+set.seed(1234)
+splitNewsDF <- createDataPartition(newsDF$label, p = .75, 
+                                  list = FALSE, 
+                                  times = 1)
+head(splitNewsDF)
+```
+
+```{r}
+trainNewsDF <- newsDF[splitNewsDF, ]
+testNewsDF <- newsDF[-splitNewsDF, ]
+
+trainCorpusNews <- cleanCorpusNews[splitNewsDF]
+testCorpusNews <- cleanCorpusNews[-splitNewsDF]
+
+trainDTMnews <- cleanDTMnews[splitNewsDF, ]
+testDTMnews <- cleanDTMnews[-splitNewsDF, ]
+
+print(ncol(cleanDTMnews))
+print(ncol(trainDTMnews))
+```
+
+Finding that our DTM has 169062 features it is wise to only take a portion of those different words, otherwise it can take a long time. So we only use features with more than a 1000 count and use those in the train and test data. Which leaves us with 1159 features. Printing the columns and already making sure we put this in a variable for later.
+
+```{r}
+freqWords <- trainDTMnews %>% findFreqTerms(1000)
+trainDTMnews <-  DocumentTermMatrix(trainCorpusNews, list(dictionary = freqWords))
+testDTMnews <-  DocumentTermMatrix(testCorpusNews, list(dictionary = freqWords))
+
+print(ncol(trainDTMnews))
+```
+
+Here we create a function which when inputted with our train and test DTM will turn the word count in the DTM's to a factor stating whether the word appears or not. We use head() to see that it worked.
+
+```{r}
+convertFunc <- function(x) {
+  x <- ifelse(x > 0, 1, 0) %>% factor(levels = c(0,1), labels = c("No", "Yes"))
+}
+
+trainDTMnews <- apply(trainDTMnews, MARGIN = 2, convertFunc)
+testDTMnews <- apply(testDTMnews, MARGIN = 2, convertFunc)
+
+head(trainDTMnews[,1:10])
+```
+
+## Modelling and evaluation
+
+With all the necessary steps completed to train our model, we use the naiveBayes() from the e1071 package and put in our data to get a trained naive bayes model. We use laplace = 1 to add a constant of 1 to all counts of the words in the prediction to not trick the model when a word appeared in the test data but not in the train data. When not using this the model will try to multiply by 0 in this case which can make the model unstable.
+
+```{r}
+newsNBmodel <- naiveBayes(trainDTMnews, trainNewsDF$label, laplace = 1)
+
+predVec <- predict(newsNBmodel, testDTMnews)
+```
+
+```{r}
+confusionMatrix(predVec, testNewsDF$label, positive = "Fake", dnn = c("Prediction", "True"))
+```
+
+As can be seen in the confusion matrix above, the model has an accuracy of 70.71%, which is decent but can definitely be improved as when trying to determine a real or fake article is only 70% correct in each case, that is not reliable for extensive use. What is interesting is that the model predicts more accurate when determining correct fake articles than correct real articles. Since the sensitivity is 75.54% (true negative) and the specificity is 65.87% (true positive).
+
+In this case I think false negatives are more costly here since having fake news identified as real news can trick people reading in weird perceptions, since if u read something and some model tells you it's real, but not that important that you need to fact check, it can change your perception and trick you into a mindset after reading a lot of fake news, thinking it's real. Real news, i think, is easier to decude that it's real, having your own opinion, people around you, fact checking, the internet community, making the probability that you find out its real higher than finding out a fake article is actually fake in this particular case. But it does depend a lot on the kind of article we are talking about.
